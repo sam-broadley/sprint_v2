@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { Button } from '../components/ui/button'
 import { useCart } from '../hooks/useCart'
 import { useLocalization } from '../lib/localization'
-import { updateDesignVariant } from '../lib/updateDesignVariant'
+import { updateDesignVariant, updateDesignData, uploadFile } from '../lib/updateDesign'
 
 const DesignPage = () => {
   const { designSlug, storeSlug } = useParams()
@@ -19,9 +19,19 @@ const DesignPage = () => {
   const [availablePositions, setAvailablePositions] = useState([])
   const [currentPosition, setCurrentPosition] = useState(null)
   const [showPositionCustomization, setShowPositionCustomization] = useState(false)
+  const [hoveredPosition, setHoveredPosition] = useState(null)
   const [availableSizes, setAvailableSizes] = useState([])
   const [sizeQuantities, setSizeQuantities] = useState({})
   const [showPricing, setShowPricing] = useState(false)
+  const [artworks, setArtworks] = useState([])
+  const [uploading, setUploading] = useState(false)
+  const [selectedArtwork, setSelectedArtwork] = useState(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [isResizing, setIsResizing] = useState(false)
+  const isDraggingRef = useRef(false)
+  const isResizingRef = useRef(false)
+  const latestArtworksRef = useRef([])
+  const realtimeSubscriptionRef = useRef(null)
   const { addToCart } = useCart()
   const { t } = useLocalization(store?.settings?.localization?.locale || 'GB') // Use store settings localization or default to GB
   const hasRun = useRef(false)
@@ -98,7 +108,19 @@ const DesignPage = () => {
         }
 
         console.log('Design data:', designData)
+        console.log('Design data.artworks from database:', designData.design_data?.artworks)
+        console.log('Full design_data JSON:', JSON.stringify(designData.design_data, null, 2))
         setDesign(designData)
+        
+        // Load existing artworks from design_data
+        if (designData.design_data && designData.design_data.artworks) {
+          console.log('Loading existing artworks:', designData.design_data.artworks)
+          console.log('First artwork details:', JSON.stringify(designData.design_data.artworks[0], null, 2))
+          setArtworks(designData.design_data.artworks)
+        }
+        
+        // Set up real-time subscription for this design
+        setupRealtimeSubscription(designData.id)
 
                   // Transform the product data to match what the component expects
           if (designData.store_products) {
@@ -186,12 +208,13 @@ const DesignPage = () => {
         .from('store_product_positions')
         .select(`
           position_id,
+          position_data,
           positions (
             id,
             name,
             max_width,
             max_height,
-            image_overlay_url
+            position_data
           )
         `)
         .eq('store_product_id', storeProductId)
@@ -202,9 +225,33 @@ const DesignPage = () => {
         return
       }
 
-      const positions = data.map(item => item.positions).filter(Boolean)
+      const positions = data.map(item => {
+        // Use store_product_positions.position_data if it exists and is not null/empty
+        let positionData = null
+        
+        if (item.position_data && item.position_data !== null && item.position_data !== '') {
+          positionData = item.position_data
+        } else if (item.positions.position_data && item.positions.position_data !== null && item.positions.position_data !== '') {
+          positionData = item.positions.position_data
+        }
+        
+        // If position_data is a string, try to parse it as JSON
+        if (typeof positionData === 'string') {
+          try {
+            positionData = JSON.parse(positionData)
+          } catch (e) {
+            console.error('Failed to parse position_data:', e)
+          }
+        }
+        
+        return {
+          ...item.positions,
+          position_data: positionData
+        }
+      }).filter(Boolean)
       setAvailablePositions(positions)
       console.log('Available positions:', positions)
+      console.log('Position data for first position:', positions[0]?.position_data)
     } catch (error) {
       console.error('Error in fetchAvailablePositions:', error)
     }
@@ -286,6 +333,7 @@ const DesignPage = () => {
     if (position.id === currentPosition?.id) return
     setCurrentPosition(position)
     setShowPositionCustomization(true)
+    setHoveredPosition(null) // Clear hover state when entering position customization
     console.log('Position changed to:', position)
   }
 
@@ -302,6 +350,426 @@ const DesignPage = () => {
   const handleContinueToPricing = () => {
     setShowPricing(true)
   }
+
+  // Handle file upload
+  const handleFileUpload = async (file) => {
+    console.log('Starting file upload...')
+    console.log('File:', file)
+    console.log('Current position:', currentPosition)
+    console.log('Design:', design)
+    
+    if (!currentPosition || !design) {
+      console.error('Missing currentPosition or design')
+      return
+    }
+
+    setUploading(true)
+    try {
+      // Upload file to Supabase storage
+      const uploadResult = await uploadFile(file)
+      
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error)
+      }
+
+      // Create new artwork entry - position it slightly offset from the position boundary
+      const newArtwork = {
+        position_id: currentPosition.id,
+        upload_id: Date.now(), // Using timestamp as upload_id for now
+        coordinates: {
+          top_percent: currentPosition.position_data.coordinates.top_percent + 5, // Offset slightly
+          left_percent: currentPosition.position_data.coordinates.left_percent + 5, // Offset slightly
+          width_percent: Math.min(30, currentPosition.position_data.coordinates.width_percent), // Smaller initial size
+          height_percent: Math.min(30, currentPosition.position_data.coordinates.height_percent) // Smaller initial size
+        },
+        properties: {
+          rotation: 0,
+          opacity: 1.0,
+          z_index: artworks.length + 1
+        },
+        url: uploadResult.url
+      }
+
+      // Add to local state
+      const updatedArtworks = [...artworks, newArtwork]
+      setArtworks(updatedArtworks)
+
+      // Update design data in database
+      const designData = {
+        artworks: updatedArtworks.map(artwork => ({
+          position_id: artwork.position_id,
+          upload_id: artwork.upload_id,
+          coordinates: artwork.coordinates,
+          properties: artwork.properties,
+          url: artwork.url // Include the URL so we can display the image
+        }))
+      }
+
+      const result = await updateDesignData(design.id, designData)
+      if (!result.success) {
+        throw new Error(result.error)
+      }
+
+      console.log('File uploaded and design updated successfully')
+      console.log('Upload result:', uploadResult)
+      console.log('New artwork:', newArtwork)
+      console.log('Updated artworks:', updatedArtworks)
+    } catch (error) {
+      console.error('Error uploading file:', error)
+      alert('Failed to upload file. Please try again.')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  // Handle file input change
+  const handleFileInputChange = (event) => {
+    const file = event.target.files[0]
+    if (file) {
+      handleFileUpload(file)
+    }
+  }
+
+  // Handle artwork selection
+  const handleArtworkSelect = (artwork) => {
+    console.log('Artwork selected:', artwork)
+    setSelectedArtwork(artwork)
+  }
+
+  // Handle artwork drag start
+  const handleMouseDown = (e, artwork) => {
+    console.log('Mouse down on artwork:', artwork)
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(true)
+    isDraggingRef.current = true
+    setSelectedArtwork(artwork)
+    
+    const handleMouseMove = (e) => {
+      console.log('Mouse move event triggered, isDragging:', isDraggingRef.current)
+      if (!isDraggingRef.current) return
+      
+      const productImage = document.querySelector('.product-image-container')
+      if (!productImage) {
+        console.log('Product image container not found')
+        return
+      }
+      
+      const rect = productImage.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
+      
+      // Convert to percentages
+      const xPercent = (x / rect.width) * 100
+      const yPercent = (y / rect.height) * 100
+      
+      // Update artwork coordinates
+      const updatedArtwork = {
+        ...artwork,
+        coordinates: {
+          ...artwork.coordinates,
+          left_percent: Math.max(0, Math.min(100 - artwork.coordinates.width_percent, xPercent)),
+          top_percent: Math.max(0, Math.min(100 - artwork.coordinates.height_percent, yPercent))
+        }
+      }
+      
+      // Update artworks array
+      const updatedArtworks = artworks.map(a => 
+        a.upload_id === artwork.upload_id ? updatedArtwork : a
+      )
+      console.log('Updating artwork coordinates during drag:', updatedArtwork.coordinates)
+      setArtworks(updatedArtworks)
+      latestArtworksRef.current = updatedArtworks // Store the latest coordinates
+      
+      // Update database in real-time during drag
+      const designData = {
+        artworks: updatedArtworks.map(a => ({
+          position_id: a.position_id,
+          upload_id: a.upload_id,
+          coordinates: a.coordinates,
+          properties: a.properties,
+          url: a.url
+        })),
+        last_updated: new Date().toISOString()
+      }
+      
+      console.log('=== DRAG UPDATE ===')
+      console.log('Design ID:', design.id)
+      console.log('Sending to update_design:', JSON.stringify(designData, null, 2))
+      console.log('Current artwork coordinates:', JSON.stringify(updatedArtworks[0]?.coordinates, null, 2))
+      
+      // Use a debounced update to avoid too many database calls
+      if (window.dragUpdateTimeout) {
+        clearTimeout(window.dragUpdateTimeout)
+      }
+      
+      window.dragUpdateTimeout = setTimeout(async () => {
+        try {
+          console.log('Attempting to update design during drag with data:', designData)
+          const result = await updateDesignData(design.id, designData)
+          console.log('Update result:', result)
+          if (!result.success) {
+            console.error('Failed to update design during drag:', result.error)
+          } else {
+            console.log('Design updated during drag successfully')
+          }
+        } catch (error) {
+          console.error('Error updating design during drag:', error)
+        }
+      }, 100) // Update every 100ms during drag
+    }
+    
+    const handleMouseUp = async () => {
+      setIsDragging(false)
+      isDraggingRef.current = false
+      
+      // Clear any pending drag updates
+      if (window.dragUpdateTimeout) {
+        clearTimeout(window.dragUpdateTimeout)
+        window.dragUpdateTimeout = null
+      }
+      
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      
+      // Final database update to ensure the last position is saved
+      // Use the latest artworks from the ref to get the most recent coordinates
+      const finalArtworks = latestArtworksRef.current.length > 0 ? latestArtworksRef.current : artworks
+      const designData = {
+        artworks: finalArtworks.map(a => ({
+          position_id: a.position_id,
+          upload_id: a.upload_id,
+          coordinates: a.coordinates,
+          properties: a.properties,
+          url: a.url
+        })),
+        last_updated: new Date().toISOString()
+      }
+      
+      console.log('=== FINAL DRAG UPDATE ===')
+      console.log('Design ID:', design.id)
+      console.log('Current artworks state:', JSON.stringify(artworks, null, 2))
+      console.log('Latest artworks from ref:', JSON.stringify(latestArtworksRef.current, null, 2))
+      console.log('Final artworks being sent:', JSON.stringify(finalArtworks, null, 2))
+      console.log('Sending to update_design:', JSON.stringify(designData, null, 2))
+      console.log('Final artwork coordinates:', JSON.stringify(finalArtworks[0]?.coordinates, null, 2))
+      
+      try {
+        console.log('Final update after drag with data:', designData)
+        const result = await updateDesignData(design.id, designData)
+        if (!result.success) {
+          console.error('Failed to update design:', result.error)
+        } else {
+          console.log('Final design update successful')
+          // Real-time subscription will automatically update the UI
+        }
+      } catch (error) {
+        console.error('Error updating design:', error)
+      }
+    }
+    
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+  }
+
+  // Handle artwork resize
+  const handleResizeStart = (e, artwork, direction) => {
+    e.stopPropagation()
+    e.preventDefault()
+    setIsResizing(true)
+    isResizingRef.current = true
+    
+    const handleResizeMove = (e) => {
+      if (!isResizingRef.current) return
+      
+      const productImage = document.querySelector('.product-image-container')
+      if (!productImage) return
+      
+      const rect = productImage.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
+      
+      // Convert to percentages
+      const xPercent = (x / rect.width) * 100
+      const yPercent = (y / rect.height) * 100
+      
+      let newCoordinates = { ...artwork.coordinates }
+      
+      switch (direction) {
+        case 'se':
+          newCoordinates.width_percent = Math.max(5, Math.min(80, xPercent - artwork.coordinates.left_percent))
+          newCoordinates.height_percent = Math.max(5, Math.min(80, yPercent - artwork.coordinates.top_percent))
+          break
+        case 'sw':
+          const newLeft = Math.max(0, Math.min(artwork.coordinates.left_percent + artwork.coordinates.width_percent - 5, xPercent))
+          newCoordinates.left_percent = newLeft
+          newCoordinates.width_percent = Math.max(5, artwork.coordinates.left_percent + artwork.coordinates.width_percent - newLeft)
+          newCoordinates.height_percent = Math.max(5, Math.min(80, yPercent - artwork.coordinates.top_percent))
+          break
+        case 'ne':
+          newCoordinates.width_percent = Math.max(5, Math.min(80, xPercent - artwork.coordinates.left_percent))
+          const newTop = Math.max(0, Math.min(artwork.coordinates.top_percent + artwork.coordinates.height_percent - 5, yPercent))
+          newCoordinates.top_percent = newTop
+          newCoordinates.height_percent = Math.max(5, artwork.coordinates.top_percent + artwork.coordinates.height_percent - newTop)
+          break
+        case 'nw':
+          const newLeftNW = Math.max(0, Math.min(artwork.coordinates.left_percent + artwork.coordinates.width_percent - 5, xPercent))
+          newCoordinates.left_percent = newLeftNW
+          newCoordinates.width_percent = Math.max(5, artwork.coordinates.left_percent + artwork.coordinates.width_percent - newLeftNW)
+          const newTopNW = Math.max(0, Math.min(artwork.coordinates.top_percent + artwork.coordinates.height_percent - 5, yPercent))
+          newCoordinates.top_percent = newTopNW
+          newCoordinates.height_percent = Math.max(5, artwork.coordinates.top_percent + artwork.coordinates.height_percent - newTopNW)
+          break
+      }
+      
+      // Update artwork coordinates
+      const updatedArtwork = {
+        ...artwork,
+        coordinates: newCoordinates
+      }
+      
+      // Update artworks array
+      const updatedArtworks = artworks.map(a => 
+        a.upload_id === artwork.upload_id ? updatedArtwork : a
+      )
+      setArtworks(updatedArtworks)
+      latestArtworksRef.current = updatedArtworks // Store the latest coordinates for resize
+      
+      // Update database in real-time during resize
+      const designData = {
+        artworks: updatedArtworks.map(a => ({
+          position_id: a.position_id,
+          upload_id: a.upload_id,
+          coordinates: a.coordinates,
+          properties: a.properties,
+          url: a.url
+        })),
+        last_updated: new Date().toISOString()
+      }
+      
+      console.log('=== RESIZE UPDATE ===')
+      console.log('Design ID:', design.id)
+      console.log('Sending to update_design:', JSON.stringify(designData, null, 2))
+      console.log('Current artwork coordinates:', JSON.stringify(updatedArtworks[0]?.coordinates, null, 2))
+      
+      // Use a debounced update to avoid too many database calls
+      if (window.resizeUpdateTimeout) {
+        clearTimeout(window.resizeUpdateTimeout)
+      }
+      
+      window.resizeUpdateTimeout = setTimeout(async () => {
+        try {
+          const result = await updateDesignData(design.id, designData)
+          if (!result.success) {
+            console.error('Failed to update design during resize:', result.error)
+          } else {
+            console.log('Design updated during resize')
+          }
+        } catch (error) {
+          console.error('Error updating design during resize:', error)
+        }
+      }, 100) // Update every 100ms during resize
+    }
+    
+    const handleResizeEnd = async () => {
+      setIsResizing(false)
+      isResizingRef.current = false
+      
+      // Clear any pending resize updates
+      if (window.resizeUpdateTimeout) {
+        clearTimeout(window.resizeUpdateTimeout)
+        window.resizeUpdateTimeout = null
+      }
+      
+      document.removeEventListener('mousemove', handleResizeMove)
+      document.removeEventListener('mouseup', handleResizeEnd)
+      
+      // Final database update to ensure the last position is saved
+      // Use the latest artworks from the ref to get the most recent coordinates
+      const finalArtworks = latestArtworksRef.current.length > 0 ? latestArtworksRef.current : artworks
+      const designData = {
+        artworks: finalArtworks.map(a => ({
+          position_id: a.position_id,
+          upload_id: a.upload_id,
+          coordinates: a.coordinates,
+          properties: a.properties,
+          url: a.url
+        })),
+        last_updated: new Date().toISOString()
+      }
+      
+      console.log('=== FINAL RESIZE UPDATE ===')
+      console.log('Design ID:', design.id)
+      console.log('Current artworks state:', JSON.stringify(artworks, null, 2))
+      console.log('Latest artworks from ref:', JSON.stringify(latestArtworksRef.current, null, 2))
+      console.log('Final artworks being sent:', JSON.stringify(finalArtworks, null, 2))
+      console.log('Sending to update_design:', JSON.stringify(designData, null, 2))
+      console.log('Final artwork coordinates:', JSON.stringify(finalArtworks[0]?.coordinates, null, 2))
+      
+      try {
+        console.log('Final update after resize with data:', designData)
+        const result = await updateDesignData(design.id, designData)
+        if (!result.success) {
+          console.error('Failed to update design:', result.error)
+        } else {
+          console.log('Final design update successful')
+          // Real-time subscription will automatically update the UI
+        }
+      } catch (error) {
+        console.error('Error updating design:', error)
+      }
+    }
+    
+    document.addEventListener('mousemove', handleResizeMove)
+    document.addEventListener('mouseup', handleResizeEnd)
+  }
+
+  // Set up real-time subscription for design updates
+  const setupRealtimeSubscription = (designId) => {
+    // Clean up any existing subscription
+    if (realtimeSubscriptionRef.current) {
+      supabase.removeChannel(realtimeSubscriptionRef.current)
+    }
+    
+    console.log('Setting up real-time subscription for design:', designId)
+    
+    // Subscribe to changes on the designs table for this specific design
+    realtimeSubscriptionRef.current = supabase
+      .channel(`design-${designId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'designs',
+          filter: `id=eq.${designId}`
+        },
+        (payload) => {
+          console.log('Real-time design update received:', payload)
+          
+          // Only update if we're not currently dragging/resizing to avoid conflicts
+          if (!isDraggingRef.current && !isResizingRef.current) {
+            if (payload.new.design_data && payload.new.design_data.artworks) {
+              console.log('Updating artworks from real-time subscription:', payload.new.design_data.artworks)
+              setArtworks(payload.new.design_data.artworks)
+            }
+          } else {
+            console.log('Ignoring real-time update during drag/resize')
+          }
+        }
+      )
+      .subscribe()
+  }
+  
+  // Clean up real-time subscription on unmount
+  useEffect(() => {
+    return () => {
+      if (realtimeSubscriptionRef.current) {
+        console.log('Cleaning up real-time subscription')
+        supabase.removeChannel(realtimeSubscriptionRef.current)
+      }
+    }
+  }, [])
 
   const handleAddToCart = async () => {
     if (!design) return
@@ -368,13 +836,103 @@ const DesignPage = () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Product Preview */}
           <div>
-            <div className="aspect-square bg-white rounded-lg flex items-center justify-center mb-4">
+                            <div 
+                  className="aspect-square bg-white rounded-lg flex items-center justify-center mb-4 relative product-image-container"
+                  onClick={() => setSelectedArtwork(null)}
+                >
               {product.image_url ? (
-                <img 
-                  src={product.image_url} 
-                  alt={product.name}
-                  className="w-full h-full object-cover rounded-lg"
-                />
+                <>
+                  <img 
+                    src={product.image_url} 
+                    alt={product.name}
+                    className="w-full h-full object-cover rounded-lg"
+                  />
+                  {/* Position Boundary Overlay */}
+                  {(hoveredPosition || currentPosition) && (hoveredPosition?.position_data || currentPosition?.position_data) && (
+                    <div 
+                      className="absolute border-2 border-blue-500 bg-blue-500 bg-opacity-20 pointer-events-none z-10"
+                      style={{
+                        top: `${(hoveredPosition || currentPosition).position_data.coordinates.top_percent}%`,
+                        left: `${(hoveredPosition || currentPosition).position_data.coordinates.left_percent}%`,
+                        width: `${(hoveredPosition || currentPosition).position_data.coordinates.width_percent}%`,
+                        height: `${(hoveredPosition || currentPosition).position_data.coordinates.height_percent}%`,
+                      }}
+                    />
+                  )}
+
+                  {/* Artwork Overlays */}
+                  {console.log('Artworks for product display:', artworks)}
+                  {console.log('Selected artwork:', selectedArtwork)}
+                  {console.log('First artwork for display:', JSON.stringify(artworks[0], null, 2))}
+                  {artworks.map((artwork, index) => (
+                    <div
+                      key={index}
+                      className="absolute pointer-events-auto"
+                      style={{
+                        top: `${artwork.coordinates.top_percent}%`,
+                        left: `${artwork.coordinates.left_percent}%`,
+                        width: `${artwork.coordinates.width_percent}%`,
+                        height: `${artwork.coordinates.height_percent}%`,
+                        transform: `rotate(${artwork.properties.rotation}deg)`,
+                        opacity: artwork.properties.opacity,
+                        zIndex: artwork.properties.z_index + 20, // Higher than position boundary
+                        cursor: selectedArtwork?.upload_id === artwork.upload_id ? 'move' : 'pointer',
+                        border: selectedArtwork?.upload_id === artwork.upload_id ? '3px solid #ef4444' : 'none', // Red border for artwork
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleArtworkSelect(artwork)
+                      }}
+                      onMouseDown={(e) => {
+                        console.log('Mouse down event triggered on artwork:', artwork.upload_id)
+                        console.log('Selected artwork:', selectedArtwork?.upload_id)
+                        if (selectedArtwork?.upload_id === artwork.upload_id) {
+                          console.log('Calling handleMouseDown')
+                          handleMouseDown(e, artwork)
+                        } else {
+                          console.log('Artwork not selected, selecting it first')
+                          handleArtworkSelect(artwork)
+                        }
+                      }}
+                    >
+                      <img
+                        src={artwork.url}
+                        alt={`Design ${index + 1}`}
+                        className="w-full h-full object-contain pointer-events-none"
+                        onError={(e) => {
+                          console.error('Failed to load image on product:', artwork.url)
+                        }}
+                      />
+                      
+                      {/* Resize handles */}
+                      {selectedArtwork?.upload_id === artwork.upload_id && (
+                        <>
+                          {/* Top-left resize handle */}
+                          <div
+                            className="absolute top-0 left-0 w-3 h-3 bg-blue-500 cursor-nw-resize"
+                            onMouseDown={(e) => handleResizeStart(e, artwork, 'nw')}
+                          />
+                          {/* Top-right resize handle */}
+                          <div
+                            className="absolute top-0 right-0 w-3 h-3 bg-blue-500 cursor-ne-resize"
+                            onMouseDown={(e) => handleResizeStart(e, artwork, 'ne')}
+                          />
+                          {/* Bottom-left resize handle */}
+                          <div
+                            className="absolute bottom-0 left-0 w-3 h-3 bg-blue-500 cursor-sw-resize"
+                            onMouseDown={(e) => handleResizeStart(e, artwork, 'sw')}
+                          />
+                          {/* Bottom-right resize handle */}
+                          <div
+                            className="absolute bottom-0 right-0 w-3 h-3 bg-blue-500 cursor-se-resize"
+                            onMouseDown={(e) => handleResizeStart(e, artwork, 'se')}
+                          />
+                        </>
+                      )}
+                    </div>
+                  ))}
+
+                </>
               ) : (
                 <div className="text-gray-500">{t('noImageAvailable')}</div>
               )}
@@ -467,6 +1025,8 @@ const DesignPage = () => {
                       <button
                         key={position.id}
                         onClick={() => handlePositionChange(position)}
+                        onMouseEnter={() => setHoveredPosition(position)}
+                        onMouseLeave={() => setHoveredPosition(null)}
                         className={`relative p-4 border-2 rounded-lg transition-all duration-200 flex-shrink-0 w-32 ${
                           currentPosition?.id === position.id
                             ? 'border-gray-900 bg-gray-50'
@@ -531,7 +1091,11 @@ const DesignPage = () => {
                   {/* Position Customization Header */}
                   <div className="flex items-center gap-4 p-6 border-b border-gray-200">
                     <button
-                      onClick={() => setShowPositionCustomization(false)}
+                      onClick={() => {
+                        setShowPositionCustomization(false)
+                        setCurrentPosition(null) // Clear current position when exiting
+                        setHoveredPosition(null) // Clear hover state when exiting
+                      }}
                       className="text-gray-600 hover:text-gray-900"
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -544,10 +1108,57 @@ const DesignPage = () => {
                   </div>
                   
                   {/* Position Customization Content */}
-                  <div className="flex items-center justify-center h-full">
-                    <p className="text-gray-500 text-lg">
-                      Position customization coming soon...
-                    </p>
+                  <div className="p-6">
+                    {/* Upload Section */}
+                    <div className="mb-6">
+                      <h4 className="text-lg font-semibold text-gray-900 mb-4">Upload Design</h4>
+                      <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleFileInputChange}
+                          className="hidden"
+                          id="file-upload"
+                          disabled={uploading}
+                        />
+                        <label
+                          htmlFor="file-upload"
+                          className="cursor-pointer inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {uploading ? 'Uploading...' : 'Choose File'}
+                        </label>
+                        <p className="mt-2 text-sm text-gray-500">
+                          Upload PNG, JPG, or SVG files
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Uploaded Artworks */}
+                    {console.log('Current artworks:', artworks)}
+                    {console.log('Current position:', currentPosition)}
+                    {console.log('Filtered artworks:', artworks.filter(artwork => artwork.position_id === currentPosition?.id))}
+                    {artworks.filter(artwork => artwork.position_id === currentPosition?.id).length > 0 && (
+                      <div className="mb-6">
+                        <h4 className="text-lg font-semibold text-gray-900 mb-4">Uploaded Designs</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                          {artworks
+                            .filter(artwork => artwork.position_id === currentPosition?.id)
+                            .map((artwork, index) => (
+                              <div key={index} className="border rounded-lg p-3">
+                                <img
+                                  src={artwork.url}
+                                  alt={`Design ${index + 1}`}
+                                  className="w-full h-24 object-cover rounded"
+                                  onError={(e) => {
+                                    console.error('Failed to load image:', artwork.url)
+                                  }}
+                                />
+                                <p className="text-sm text-gray-600 mt-2">Design {index + 1}</p>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : showPricing ? (
