@@ -307,17 +307,17 @@ const DesignPage = () => {
     if (!design || variant.id === currentVariant?.id) return
 
     try {
+      console.log('=== VARIANT CHANGE REQUESTED ===')
+      console.log('Changing variant to:', variant)
+      console.log('Current variant:', currentVariant)
+      console.log('Design ID:', design.id)
+      
       const result = await updateDesignVariant(design.id, variant.id)
       if (result.success) {
-        setCurrentVariant(variant)
-        setDesign(result.design)
-        // Update the product image to reflect the new variant
-        setProduct(prev => ({
-          ...prev,
-          image_url: variant.image_url,
-          variant: variant
-        }))
-        console.log('Variant updated successfully:', variant)
+        console.log('Variant update successful, waiting for realtime update...')
+        console.log('Update result:', result)
+        // Don't update local state immediately - let the realtime subscription handle it
+        // This prevents conflicts and ensures consistency across multiple users
       } else {
         console.error('Failed to update variant:', result.error)
         alert('Failed to update variant. Please try again.')
@@ -732,6 +732,7 @@ const DesignPage = () => {
     }
     
     console.log('Setting up real-time subscription for design:', designId)
+    console.log('Available variants at subscription setup:', availableVariants)
     
     // Subscribe to changes on the designs table for this specific design
     realtimeSubscriptionRef.current = supabase
@@ -749,9 +750,40 @@ const DesignPage = () => {
           
           // Only update if we're not currently dragging/resizing to avoid conflicts
           if (!isDraggingRef.current && !isResizingRef.current) {
+            // Handle design data updates (artworks)
             if (payload.new.design_data && payload.new.design_data.artworks) {
               console.log('Updating artworks from real-time subscription:', payload.new.design_data.artworks)
               setArtworks(payload.new.design_data.artworks)
+            }
+            
+            // Handle variant changes
+            if (payload.new.variant_id !== payload.old?.variant_id) {
+              console.log('=== VARIANT CHANGE DETECTED ===')
+              console.log('Old variant_id:', payload.old?.variant_id)
+              console.log('New variant_id:', payload.new.variant_id)
+              console.log('Available variants:', availableVariants)
+              console.log('Current variant:', currentVariant)
+              
+              // Find the new variant from available variants
+              const newVariant = availableVariants.find(v => v.id === payload.new.variant_id)
+              console.log('Found new variant:', newVariant)
+              
+              if (newVariant) {
+                console.log('Updating current variant to:', newVariant)
+                setCurrentVariant(newVariant)
+                
+                // Update the product image to reflect the new variant
+                setProduct(prev => ({
+                  ...prev,
+                  image_url: newVariant.image_url,
+                  variant: newVariant
+                }))
+                
+                console.log('Variant update completed successfully')
+              } else {
+                console.error('Variant not found in availableVariants:', payload.new.variant_id)
+                console.log('Available variant IDs:', availableVariants.map(v => v.id))
+              }
             }
           } else {
             console.log('Ignoring real-time update during drag/resize')
@@ -771,6 +803,104 @@ const DesignPage = () => {
     }
   }, [])
 
+  // Keyboard controls for moving selected artwork
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (!selectedArtwork) return
+
+      // Prevent default behavior for arrow keys
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        e.preventDefault()
+      }
+
+      const moveAmount = e.shiftKey ? 5 : 1 // Larger movement with Shift
+      let updatedArtwork = { ...selectedArtwork }
+
+      switch (e.key) {
+        case 'ArrowUp':
+          updatedArtwork.coordinates = {
+            ...updatedArtwork.coordinates,
+            top_percent: Math.max(0, updatedArtwork.coordinates.top_percent - moveAmount)
+          }
+          break
+        case 'ArrowDown':
+          updatedArtwork.coordinates = {
+            ...updatedArtwork.coordinates,
+            top_percent: Math.min(100 - updatedArtwork.coordinates.height_percent, updatedArtwork.coordinates.top_percent + moveAmount)
+          }
+          break
+        case 'ArrowLeft':
+          updatedArtwork.coordinates = {
+            ...updatedArtwork.coordinates,
+            left_percent: Math.max(0, updatedArtwork.coordinates.left_percent - moveAmount)
+          }
+          break
+        case 'ArrowRight':
+          updatedArtwork.coordinates = {
+            ...updatedArtwork.coordinates,
+            left_percent: Math.min(100 - updatedArtwork.coordinates.width_percent, updatedArtwork.coordinates.left_percent + moveAmount)
+          }
+          break
+        default:
+          return
+      }
+
+      // Update artworks array
+      const updatedArtworks = artworks.map(a => 
+        a.upload_id === selectedArtwork.upload_id ? updatedArtwork : a
+      )
+      setArtworks(updatedArtworks)
+      setSelectedArtwork(updatedArtwork)
+
+      // Update database
+      const designData = {
+        artworks: updatedArtworks.map(a => ({
+          position_id: a.position_id,
+          upload_id: a.upload_id,
+          coordinates: a.coordinates,
+          properties: a.properties,
+          url: a.url
+        })),
+        last_updated: new Date().toISOString()
+      }
+
+      // Debounced database update
+      if (window.keyboardUpdateTimeout) {
+        clearTimeout(window.keyboardUpdateTimeout)
+      }
+      
+      window.keyboardUpdateTimeout = setTimeout(async () => {
+        try {
+          const result = await updateDesignData(design.id, designData)
+          if (!result.success) {
+            console.error('Failed to update design during keyboard movement:', result.error)
+          }
+        } catch (error) {
+          console.error('Error updating design during keyboard movement:', error)
+        }
+      }, 100)
+    }
+
+    // Add event listener
+    document.addEventListener('keydown', handleKeyDown)
+
+    // Cleanup
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      if (window.keyboardUpdateTimeout) {
+        clearTimeout(window.keyboardUpdateTimeout)
+      }
+    }
+  }, [selectedArtwork, artworks, design])
+  
+  // Re-setup real-time subscription when availableVariants changes
+  useEffect(() => {
+    if (design && availableVariants.length > 0) {
+      console.log('Re-setting up real-time subscription due to availableVariants change')
+      setupRealtimeSubscription(design.id)
+    }
+  }, [availableVariants, design])
+
   const handleAddToCart = async () => {
     if (!design) return
     
@@ -780,6 +910,54 @@ const DesignPage = () => {
     } else {
       console.error('Add to cart error:', result.error)
       alert('Failed to add to cart. Please try again.')
+    }
+  }
+
+  const handleDeleteArtwork = async (artwork) => {
+    if (!window.confirm('Are you sure you want to delete this design? This action cannot be undone.')) {
+      return
+    }
+
+    try {
+      // Extract file path from URL for storage deletion
+      const urlParts = artwork.url.split('/')
+      const fileName = urlParts[urlParts.length - 1]
+      
+      // Delete from Supabase storage
+      const { error: storageError } = await supabase.storage
+        .from('user-uploads')
+        .remove([fileName])
+
+      if (storageError) {
+        console.error('Error deleting from storage:', storageError)
+        // Continue with design data update even if storage deletion fails
+      }
+
+      // Remove artwork from local state
+      const updatedArtworks = artworks.filter(a => a.upload_id !== artwork.upload_id)
+      setArtworks(updatedArtworks)
+
+      // Update design data in database
+      const designData = {
+        artworks: updatedArtworks.map(a => ({
+          position_id: a.position_id,
+          upload_id: a.upload_id,
+          coordinates: a.coordinates,
+          properties: a.properties,
+          url: a.url
+        }))
+      }
+
+      const result = await updateDesignData(design.id, designData)
+      if (!result.success) {
+        console.error('Failed to update design data after deletion:', result.error)
+        alert('Design deleted from storage but failed to update design data. Please refresh the page.')
+      } else {
+        console.log('Artwork deleted successfully')
+      }
+    } catch (error) {
+      console.error('Error deleting artwork:', error)
+      alert('Failed to delete design. Please try again.')
     }
   }
 
@@ -1039,7 +1217,7 @@ const DesignPage = () => {
                         </p>
                         
                         {/* Active indicator */}
-                        {currentPosition?.id === position.id && (
+                        {(currentPosition?.id === position.id || artworks.some(artwork => artwork.position_id === position.id)) && (
                           <div className="absolute top-2 right-2 w-4 h-4 bg-gray-900 rounded-full flex items-center justify-center">
                             <svg className="w-2 h-2 text-white" fill="currentColor" viewBox="0 0 20 20">
                               <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -1087,7 +1265,11 @@ const DesignPage = () => {
               </Button>
 
               {showPositionCustomization ? (
-                <div className="absolute inset-0 border-2 border-blue-500 rounded-lg bg-white z-10">
+                <div className="absolute inset-0 rounded-lg bg-white z-10"
+                style={{ 
+                  backgroundColor: '#FAFAFA', 
+                  borderRadius: '20px'
+                }}>
                   {/* Position Customization Header */}
                   <div className="flex items-center gap-4 p-6 border-b border-gray-200">
                     <button
@@ -1112,7 +1294,36 @@ const DesignPage = () => {
                     {/* Upload Section */}
                     <div className="mb-6">
                       <h4 className="text-lg font-semibold text-gray-900 mb-4">Upload Design</h4>
-                      <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
+                      <div 
+                        className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center transition-colors duration-200"
+                        onDragOver={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          e.currentTarget.classList.add('border-blue-500', 'bg-blue-50')
+                        }}
+                        onDragLeave={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          e.currentTarget.classList.remove('border-blue-500', 'bg-blue-50')
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          e.currentTarget.classList.remove('border-blue-500', 'bg-blue-50')
+                          
+                          const files = Array.from(e.dataTransfer.files)
+                          const imageFiles = files.filter(file => 
+                            file.type.startsWith('image/') && 
+                            ['image/png', 'image/jpeg', 'image/jpg', 'image/svg+xml'].includes(file.type)
+                          )
+                          
+                          if (imageFiles.length > 0) {
+                            handleFileUpload(imageFiles[0])
+                          } else {
+                            alert('Please drop a valid image file (PNG, JPG, or SVG)')
+                          }
+                        }}
+                      >
                         <input
                           type="file"
                           accept="image/*"
@@ -1130,6 +1341,9 @@ const DesignPage = () => {
                         <p className="mt-2 text-sm text-gray-500">
                           Upload PNG, JPG, or SVG files
                         </p>
+                        <p className="mt-1 text-xs text-gray-400">
+                          Or drag and drop files here
+                        </p>
                       </div>
                     </div>
 
@@ -1144,7 +1358,7 @@ const DesignPage = () => {
                           {artworks
                             .filter(artwork => artwork.position_id === currentPosition?.id)
                             .map((artwork, index) => (
-                              <div key={index} className="border rounded-lg p-3">
+                              <div key={index} className="border rounded-lg p-3 relative">
                                 <img
                                   src={artwork.url}
                                   alt={`Design ${index + 1}`}
@@ -1153,7 +1367,18 @@ const DesignPage = () => {
                                     console.error('Failed to load image:', artwork.url)
                                   }}
                                 />
-                                <p className="text-sm text-gray-600 mt-2">Design {index + 1}</p>
+                                <div className="flex justify-between items-center mt-2">
+                                  <p className="text-sm text-gray-600">Design {index + 1}</p>
+                                  <button
+                                    onClick={() => handleDeleteArtwork(artwork)}
+                                    className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-full transition-colors duration-200"
+                                    title="Delete design"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                    </svg>
+                                  </button>
+                                </div>
                               </div>
                             ))}
                         </div>

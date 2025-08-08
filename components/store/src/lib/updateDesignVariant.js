@@ -4,13 +4,13 @@ import { supabase } from './supabase'
 export const updateDesignVariant = async (designId, variantId) => {
   try {
     const { data, error } = await supabase
-      .rpc('update_design_variant', {
+      .rpc('update_design', {
         p_design_id: designId,
         p_variant_id: variantId
       })
 
     if (error) {
-      console.error('Error calling update_design_variant:', error)
+      console.error('Error calling update_design:', error)
       throw error
     }
 

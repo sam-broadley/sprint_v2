@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '../components/ui/card'
 import { Button } from '../components/ui/button'
 import { useCart } from '../hooks/useCart'
 import { useLocalization } from '../lib/localization'
+import { getSessionCustomer } from '../lib/sessionCustomer'
 
 const DesignsPage = () => {
   const { storeSlug } = useParams()
@@ -45,9 +46,17 @@ const DesignsPage = () => {
     const fetchDesigns = async () => {
       try {
         setLoading(true)
-        console.log('Fetching designs for customer_id: 1')
         
-        // Simplified query - just get the basic design info first
+        // Get the current session customer
+        const customerId = await getSessionCustomer()
+        console.log('Fetching designs for customer_id:', customerId)
+        
+        if (!customerId) {
+          setError('Unable to identify customer. Please refresh the page.')
+          return
+        }
+        
+        // Get designs for the current customer with product and variant info
         const { data, error } = await supabase
           .from('designs')
           .select(`
@@ -56,9 +65,21 @@ const DesignsPage = () => {
             name,
             customer_id,
             store_product_id,
-            created_at
+            created_at,
+            design_data,
+            store_products (
+              id,
+              name,
+              base_price
+            ),
+            variants (
+              id,
+              name,
+              color_code,
+              image_url
+            )
           `)
-          .is('customer_id', null)
+          .eq('customer_id', customerId)
 
         console.log('Designs fetch result:', { data, error })
 
@@ -68,8 +89,16 @@ const DesignsPage = () => {
           return
         }
 
-        setDesigns(data || [])
-        console.log('Designs loaded:', data?.length || 0)
+        // Filter out designs with empty design_data
+        const designsWithArtworks = (data || []).filter(design => 
+          design.design_data && 
+          design.design_data.artworks && 
+          design.design_data.artworks.length > 0
+        )
+        
+        setDesigns(designsWithArtworks)
+        console.log('Total designs:', data?.length || 0)
+        console.log('Designs with artworks:', designsWithArtworks.length)
       } catch (err) {
         console.error('Error fetching designs:', err)
         setError(`Failed to load designs: ${err.message}`)
@@ -97,6 +126,33 @@ const DesignsPage = () => {
     } catch (error) {
       console.error('Add to cart error:', error)
       alert('Failed to add to cart. Please try again.')
+    }
+  }
+
+  const handleDeleteDesign = async (design) => {
+    console.log('Delete button clicked for design:', design.id)
+    if (!window.confirm(`Are you sure you want to delete Design #${design.id}? This action cannot be undone.`)) {
+      return
+    }
+
+    try {
+      const { error } = await supabase
+        .from('designs')
+        .delete()
+        .eq('id', design.id)
+
+      if (error) {
+        console.error('Error deleting design:', error)
+        alert('Failed to delete design. Please try again.')
+        return
+      }
+
+      // Remove the design from local state
+      setDesigns(prevDesigns => prevDesigns.filter(d => d.id !== design.id))
+      alert('Design deleted successfully!')
+    } catch (error) {
+      console.error('Error deleting design:', error)
+      alert('Failed to delete design. Please try again.')
     }
   }
 
@@ -172,50 +228,104 @@ const DesignsPage = () => {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {designs.map((design) => (
-              <Card key={design.id} className="overflow-hidden">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg">
-                    Design #{design.id}
-                  </CardTitle>
-                  <CardDescription>
-                    <div className="flex justify-between items-center">
-                      <span>Created {new Date(design.created_at).toLocaleDateString()}</span>
-                      <span className={`px-2 py-1 text-xs rounded-full ${
-                        design.status === 'completed' ? 'bg-green-100 text-green-800' :
-                        design.status === 'ordered' ? 'bg-blue-100 text-blue-800' :
-                        'bg-gray-100 text-gray-800'
-                      }`}>
-                        {design.status}
-                      </span>
-                    </div>
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  <div className="space-y-4">
-                    <div className="bg-gray-100 rounded-lg p-4 min-h-[120px] flex items-center justify-center">
-                      <p className="text-gray-500 text-sm">
-                        {t('designPreview')}
+              <Card key={design.id} className="w-full max-w-sm">
+                <CardContent className="p-0">
+                  {/* Design Image with Artworks Overlay */}
+                  <div className="relative aspect-square bg-gray-100 rounded-lg flex items-center justify-center overflow-hidden">
+                    {/* Base product image */}
+                    {design.variants?.image_url ? (
+                      <img 
+                        src={design.variants.image_url} 
+                        alt="Product base"
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          console.error('Failed to load product image:', design.variants.image_url)
+                          e.target.style.display = 'none'
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full h-full bg-gray-200 flex items-center justify-center">
+                        <p className="text-gray-500 text-sm">Product Base</p>
+                      </div>
+                    )}
+                    
+                    {/* Artworks overlay from design_data */}
+                    {console.log('Design data for design', design.id, ':', design.design_data)}
+                    {design.design_data && design.design_data.artworks && design.design_data.artworks.map((artwork, index) => (
+                      <div
+                        key={index}
+                        className="absolute pointer-events-none"
+                        style={{
+                          top: `${artwork.coordinates.top_percent}%`,
+                          left: `${artwork.coordinates.left_percent}%`,
+                          width: `${artwork.coordinates.width_percent}%`,
+                          height: `${artwork.coordinates.height_percent}%`,
+                          transform: `rotate(${artwork.properties?.rotation || 0}deg)`,
+                          opacity: artwork.properties?.opacity || 1.0,
+                          zIndex: artwork.properties?.z_index || 1,
+                        }}
+                      >
+                        <img
+                          src={artwork.url}
+                          alt={`Design ${index + 1}`}
+                          className="w-full h-full object-contain"
+                          onError={(e) => {
+                            console.error('Failed to load artwork image:', artwork.url)
+                            e.target.style.display = 'none'
+                          }}
+                          onLoad={() => {
+                            console.log('Successfully loaded artwork image:', artwork.url)
+                          }}
+                        />
+                      </div>
+                    ))}
+                    
+                    {/* Delete button overlay */}
+                    <button
+                      onClick={() => handleDeleteDesign(design)}
+                      className="absolute top-3 right-3 p-2 bg-red-500 hover:bg-red-600 text-white rounded-full transition-colors duration-200 shadow-lg z-10"
+                      title="Delete design"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                  
+                  {/* Design Info */}
+                  <div className="p-4">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                      Design #{design.id}
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-2">
+                      Created {new Date(design.created_at).toLocaleDateString()}
+                    </p>
+                    {design.design_data && design.design_data.artworks && (
+                      <p className="text-xs text-gray-500 mb-4">
+                        {design.design_data.artworks.length} artwork{design.design_data.artworks.length !== 1 ? 's' : ''}
                       </p>
-                    </div>
-                    <div className="flex space-x-2">
-                      <Link
-                        to={`/${storeSlug}/design/${design.slug}`}
-                        className="flex-1"
-                      >
-                        <Button className="w-full">
-                          {t('editDesign')}
-                        </Button>
-                      </Link>
-                      <Button 
-                        variant="outline" 
-                        className="flex-1"
-                        onClick={() => handleAddToCart(design)}
-                      >
-                        {t('addToCart')}
-                      </Button>
-                    </div>
+                    )}
                   </div>
                 </CardContent>
+                
+                <CardFooter className="pt-0">
+                  <div className="flex gap-2 w-full">
+                    <Link
+                      to={`/${storeSlug}/design/${design.slug}`}
+                      className="flex-1"
+                    >
+                      <Button variant="outline" className="w-full">
+                        {t('editDesign')}
+                      </Button>
+                    </Link>
+                    <Button 
+                      onClick={() => handleAddToCart(design)}
+                      className="flex-1"
+                    >
+                      {t('addToCart')}
+                    </Button>
+                  </div>
+                </CardFooter>
               </Card>
             ))}
           </div>

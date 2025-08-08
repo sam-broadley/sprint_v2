@@ -102,11 +102,15 @@ const Header = ({ onMobileMenuToggle }) => {
               <div className="text-xs lg:text-sm text-gray-600">
                 Cart: {getCartTotal()} items
               </div>
-              <button className="p-2 text-gray-600 hover:text-gray-900">
+              <Link 
+                to={`/${storeSlug}/designs`}
+                className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors duration-200"
+                title="My Designs"
+              >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
                 </svg>
-              </button>
+              </Link>
               <button className="px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-md hover:bg-gray-800 flex items-center space-x-1">
                 <span>Continue to Quote</span>
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
