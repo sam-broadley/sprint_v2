@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Variant button styling */
+button[data-is-selected="true"] {
+  background-color: rgb(249 250 251) !important;
+}
+
+button[data-is-selected="true"][data-variant-color]:not([data-variant-color=""]) {
+  background-color: var(--variant-color, rgb(249 250 251)) !important;
+}
+
+button[data-variant-color]:not([data-is-selected="true"]):hover {
+  background-color: var(--variant-color, transparent) !important;
+  border-color: var(--variant-border-color, #9CA3AF) !important;
+} 
