@@ -20,6 +20,7 @@ const DesignPage = () => {
   const [currentPosition, setCurrentPosition] = useState(null)
   const [showPositionCustomization, setShowPositionCustomization] = useState(false)
   const [hoveredPosition, setHoveredPosition] = useState(null)
+  const [selectedDecorationMethod, setSelectedDecorationMethod] = useState(null)
   const [availableSizes, setAvailableSizes] = useState([])
   const [sizeQuantities, setSizeQuantities] = useState({})
   const [showPricing, setShowPricing] = useState(false)
@@ -209,6 +210,7 @@ const DesignPage = () => {
         .select(`
           position_id,
           position_data,
+          decoration_methods,
           positions (
             id,
             name,
@@ -244,14 +246,28 @@ const DesignPage = () => {
           }
         }
         
+        // Parse decoration_methods if it's a string
+        let decorationMethods = null
+        if (item.decoration_methods && typeof item.decoration_methods === 'string') {
+          try {
+            decorationMethods = JSON.parse(item.decoration_methods)
+          } catch (e) {
+            console.error('Failed to parse decoration_methods:', e)
+          }
+        } else if (item.decoration_methods) {
+          decorationMethods = item.decoration_methods
+        }
+        
         return {
           ...item.positions,
-          position_data: positionData
+          position_data: positionData,
+          decoration_methods: decorationMethods
         }
       }).filter(Boolean)
-      setAvailablePositions(positions)
-      console.log('Available positions:', positions)
-      console.log('Position data for first position:', positions[0]?.position_data)
+              setAvailablePositions(positions)
+        console.log('Available positions:', positions)
+        console.log('Position data for first position:', positions[0]?.position_data)
+        console.log('Decoration methods for first position:', positions[0]?.decoration_methods)
     } catch (error) {
       console.error('Error in fetchAvailablePositions:', error)
     }
@@ -334,6 +350,14 @@ const DesignPage = () => {
     setCurrentPosition(position)
     setShowPositionCustomization(true)
     setHoveredPosition(null) // Clear hover state when entering position customization
+    
+    // Auto-select the first decoration method if available
+    if (position.decoration_methods && Object.keys(position.decoration_methods).length > 0) {
+      const firstMethod = Object.keys(position.decoration_methods)[0]
+      setSelectedDecorationMethod(firstMethod)
+      console.log('Auto-selected first decoration method:', firstMethod)
+    }
+    
     console.log('Position changed to:', position)
   }
 
@@ -1346,6 +1370,74 @@ const DesignPage = () => {
                         </p>
                       </div>
                     </div>
+
+                    {/* Decoration Methods */}
+                    {console.log('Current position decoration methods:', currentPosition?.decoration_methods)}
+                    {currentPosition?.decoration_methods && (
+                      <div className="mb-6">
+                        <h4 className="text-lg font-semibold text-gray-900 mb-4">Decoration Method</h4>
+                        <div className="grid grid-cols-1 gap-3">
+                                                    {Object.entries(currentPosition.decoration_methods).map(([method, details]) => {
+                            console.log('Rendering method:', method, 'with details:', details)
+                            return (
+                              <div
+                                key={method}
+                                className={`p-4 border-2 rounded-lg cursor-pointer transition-all duration-200 relative ${
+                                  selectedDecorationMethod === method
+                                    ? 'border-blue-500 bg-blue-50'
+                                    : 'border-gray-200 hover:border-gray-300'
+                                }`}
+                                onClick={() => setSelectedDecorationMethod(method)}
+                              >
+                                {/* Most Popular Badge */}
+                                {details.featured && (
+                                  <div className="absolute top-3 right-3 bg-orange-500 text-white text-xs font-medium px-2 py-1 rounded-full shadow-sm">
+                                    Most Popular
+                                  </div>
+                                )}
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <h5 className="text-lg font-medium text-gray-900 capitalize">
+                                      {method.replace('_', ' ')}
+                                    </h5>
+                                  <div className="mt-2 space-y-1">
+                                    <p className="text-sm text-gray-600">
+                                      Setup Fee: ${details.setup_fee || 0}
+                                    </p>
+                                    <p className="text-sm text-gray-600">
+                                      Price per Unit: ${details.price_per_unit || 0}
+                                    </p>
+                                    {details.max_width && (
+                                      <p className="text-sm text-gray-600">
+                                        Max Width: {details.max_width}px
+                                      </p>
+                                    )}
+                                    {details.max_colors && (
+                                      <p className="text-sm text-gray-600">
+                                        Max Colors: {details.max_colors}
+                                      </p>
+                                    )}
+                                    {details.min_quantity && (
+                                      <p className="text-sm text-gray-600">
+                                        Min Quantity: {details.min_quantity}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                                {selectedDecorationMethod === method && (
+                                  <div className="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center">
+                                    <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Uploaded Artworks */}
                     {console.log('Current artworks:', artworks)}

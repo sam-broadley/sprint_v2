@@ -23,11 +23,11 @@ const DesignPage = () => {
   const [sizeQuantities, setSizeQuantities] = useState({})
   const [showPricing, setShowPricing] = useState(false)
   const { addToCart } = useCart()
-  const { t } = useLocalization(store?.settings?.localization?.locale || 'GB') // Use store settings localization or default to GB
+  const { t } = useLocalization(store?.store_settings?.localization?.locale || 'GB') // Use store settings localization or default to GB
   const hasRun = useRef(false)
 
   // Debug: Log the current localization
-  console.log('DesignPage - Store settings:', store?.settings, 'Using locale:', store?.settings?.localization?.locale || 'GB')
+  console.log('DesignPage - Store settings:', store?.store_settings, 'Using locale:', store?.store_settings?.localization?.locale || 'GB')
 
   useEffect(() => {
     const fetchStore = async () => {
@@ -40,7 +40,7 @@ const DesignPage = () => {
               store_id,
               stores (
                 name,
-                settings
+                store_settings
               )
             )
           `)
@@ -358,7 +358,7 @@ const DesignPage = () => {
   }
 
   return (
-    <div className="min-h-screen bg-white" key={store?.settings?.localization?.locale || 'GB'}>
+    <div className="min-h-screen bg-white" key={store?.store_settings?.localization?.locale || 'GB'}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Design Header - Removed title and design ID */}
         <div className="mb-8">

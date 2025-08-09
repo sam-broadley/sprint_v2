@@ -231,7 +231,10 @@ const DesignsPage = () => {
               <Card key={design.id} className="w-full max-w-sm">
                 <CardContent className="p-0">
                   {/* Design Image with Artworks Overlay */}
-                  <div className="relative aspect-square bg-gray-100 rounded-lg flex items-center justify-center overflow-hidden">
+                  <div 
+                    className="relative aspect-square bg-gray-100 rounded-lg flex items-center justify-center overflow-hidden cursor-pointer hover:opacity-90 transition-opacity duration-200"
+                    onClick={() => window.location.href = `/${storeSlug}/design/${design.slug}`}
+                  >
                     {/* Base product image */}
                     {design.variants?.image_url ? (
                       <img 
@@ -282,7 +285,10 @@ const DesignsPage = () => {
                     
                     {/* Delete button overlay */}
                     <button
-                      onClick={() => handleDeleteDesign(design)}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDeleteDesign(design)
+                      }}
                       className="absolute top-3 right-3 p-2 bg-red-500 hover:bg-red-600 text-white rounded-full transition-colors duration-200 shadow-lg z-10"
                       title="Delete design"
                     >
