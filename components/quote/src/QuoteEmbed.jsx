@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
-import { createClient } from '@supabase/supabase-js';
+import { getSupabaseClient } from './lib/supabase';
 import FileUpload from './components/FileUpload';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
@@ -14,10 +14,11 @@ const QuoteEmbed = ({ storeSlug, supabaseUrl, supabaseAnonKey }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState('');
   
-  const supabase = (supabaseUrl && supabaseAnonKey) ? createClient(
-    supabaseUrl || process.env.REACT_APP_SUPABASE_URL,
-    supabaseAnonKey || process.env.REACT_APP_SUPABASE_ANON_KEY
-  ) : null;
+  const supabase = useMemo(() => {
+    const url = supabaseUrl || process.env.REACT_APP_SUPABASE_URL;
+    const key = supabaseAnonKey || process.env.REACT_APP_SUPABASE_ANON_KEY;
+    return getSupabaseClient(url, key);
+  }, [supabaseUrl, supabaseAnonKey]);
 
   const {
     register,
